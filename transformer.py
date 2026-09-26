@@ -11,10 +11,17 @@ from transformers import (
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from tqdm.auto import tqdm
+from accelerate import Accelerator
 
 def main():
-    # 1. Load data and tokenizer
-    raw_datasets = load_dataset("nyu-mll/glue", "mrpc")
+    # 1. Initialize Accelerator
+    # Accelerate handles mixed precision and gradient accumulation automatically
+    accelerator = Accelerator(gradient_accumulation_steps=4)
+
+    # 2. Load Data and Tokenizer
+    # Switched to PAWS (Paraphrase Adversaries from Word Scrambling)
+    # This dataset specifically fixes the "Lexical Overlap" trap!
+    raw_datasets = load_dataset("paws", "labeled_final")
     checkpoint = "bert-base-uncased"
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
@@ -24,49 +31,37 @@ def main():
     tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "idx"])
+    # PAWS uses 'id' instead of 'idx'
+    tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "id"])
     tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
     tokenized_datasets.set_format("torch")
 
-    # 2. VRAM-Optimized Dataloaders
+    # 3. Dataloaders
     num_workers = min(4, os.cpu_count() or 1)
-    # Physical batch size reduced to 4 to prevent Out Of Memory (OOM) errors on 6GB VRAM
     train_dataloader = DataLoader(
         tokenized_datasets["train"], 
         shuffle=True, 
-        batch_size=4, 
+        batch_size=8, # Slightly larger batch size since Accelerate optimizes memory well
         collate_fn=data_collator,
         pin_memory=True,          
         num_workers=num_workers   
     )
     eval_dataloader = DataLoader(
         tokenized_datasets["validation"], 
-        batch_size=4, 
+        batch_size=8, 
         collate_fn=data_collator,
         pin_memory=True,
         num_workers=num_workers
     )
 
-    # 3. Initialize model and Device
-    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    # 4. Initialize model
     model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
-    model.to(device)
 
-    # PyTorch 2.0 Optimization
-    # torch.compile() uses Triton, which is not natively supported on Windows.
-    if hasattr(torch, "compile") and torch.cuda.is_available() and os.name != "nt":
-        model = torch.compile(model)
-
-    # 4. Set up Optimizer and Gradient Accumulation
-    is_cuda = torch.cuda.is_available()
-    optimizer = AdamW(model.parameters(), lr=5e-5, fused=is_cuda)
-
-    # Gradient Accumulation: Simulates a larger batch size without exceeding VRAM
-    # Effective batch size = Physical batch size (4) * Accumulation steps (4) = 16
-    accumulation_steps = 4 
+    # 5. Set up Optimizer 
+    optimizer = AdamW(model.parameters(), lr=5e-5)
 
     num_epochs = 3
-    num_training_steps = num_epochs * len(train_dataloader) // accumulation_steps
+    num_training_steps = num_epochs * (len(train_dataloader) // accelerator.gradient_accumulation_steps)
     lr_scheduler = get_scheduler(
         "linear",
         optimizer=optimizer,
@@ -74,61 +69,58 @@ def main():
         num_training_steps=num_training_steps,
     )
 
-    # 5. Initialize FP16 GradScaler (Leveraging Turing Tensor Cores)
-    scaler = torch.amp.GradScaler('cuda') if is_cuda else None
+    # 6. Prepare everything with Accelerate
+    # This magically moves models/tensors to GPUs and prepares them for training
+    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+    )
 
-    # 6. The Training Loop with Accumulation
-    progress_bar = tqdm(range(num_training_steps))
+    # 7. The Training Loop (Notice how much cleaner this is!)
+    progress_bar = tqdm(range(num_training_steps), disable=not accelerator.is_local_main_process)
     model.train()
 
     for epoch in range(num_epochs):
         for step, batch in enumerate(train_dataloader):
-            batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-            
-            with torch.amp.autocast('cuda', enabled=is_cuda):
+            with accelerator.accumulate(model):
                 outputs = model(**batch)
-                # Normalize the loss to account for accumulation
-                loss = outputs.loss / accumulation_steps
+                loss = outputs.loss
                 
-            if scaler is not None:
-                scaler.scale(loss).backward()
+                # Accelerate handles mixed-precision scaling and backward passes
+                accelerator.backward(loss)
                 
-                # Only update weights after accumulating enough gradients
-                if (step + 1) % accumulation_steps == 0 or (step + 1) == len(train_dataloader):
-                    scaler.step(optimizer)
-                    scaler.update()
-                    lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True) 
-                    progress_bar.update(1)
-            else:
-                loss.backward()
-                if (step + 1) % accumulation_steps == 0 or (step + 1) == len(train_dataloader):
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
-                    progress_bar.update(1)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
+                
+            # Only update progress bar when we actually take an optimizer step
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
 
-    # 7. The Evaluation Loop
-    metric = evaluate.load("glue", "mrpc")
+    # 8. The Evaluation Loop
+    metric = evaluate.load("accuracy")
     model.eval()
     for batch in eval_dataloader:
-        batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-        
-        with torch.no_grad(), torch.amp.autocast('cuda', enabled=is_cuda):
+        with torch.no_grad():
             outputs = model(**batch)
 
         logits = outputs.logits
         predictions = torch.argmax(logits, dim=-1)
-        metric.add_batch(predictions=predictions, references=batch["labels"])
+        
+        # Accelerate can gather predictions across multiple GPUs if you ever scale up
+        predictions, references = accelerator.gather_for_metrics((predictions, batch["labels"]))
+        metric.add_batch(predictions=predictions, references=references)
 
     results = metric.compute()
-    print(results)
+    accelerator.print(f"Evaluation Results: {results}")
 
-    # 8. Save the trained model and tokenizer
-    print("Saving the model for testing...")
-    model.save_pretrained("./my_mrpc_model")
-    tokenizer.save_pretrained("./my_mrpc_model")
-    print("Model successfully saved to ./my_mrpc_model!")
+    # 9. Save the trained model and tokenizer
+    accelerator.wait_for_everyone()
+    unwrapped_model = accelerator.unwrap_model(model)
+    if accelerator.is_main_process:
+        print("Saving the model for testing...")
+        unwrapped_model.save_pretrained("./my_paws_model")
+        tokenizer.save_pretrained("./my_paws_model")
+        print("Model successfully saved to ./my_paws_model!")
 
 if __name__ == '__main__':
     main()

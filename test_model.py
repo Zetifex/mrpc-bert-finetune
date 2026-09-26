@@ -3,11 +3,11 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import os
 
 def test_model():
-    model_path = "./my_mrpc_model"
+    model_path = "./my_paws_model"
     
     if not os.path.exists(model_path):
         print(f"Error: Could not find the model at {model_path}.")
-        print("Please run transformer.py first so it can train and save the model!")
+        print("Please run transformer.py first so it can train and save the PAWS model!")
         return
 
     print("Loading the trained model...")
