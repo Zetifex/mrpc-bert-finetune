@@ -75,13 +75,15 @@ def main():
         r=8, 
         lora_alpha=16, 
         lora_dropout=0.1,
-        target_modules=["query", "value"] # We only fine-tune the attention heads
+        target_modules=["query", "value"], # We only fine-tune the attention heads
+        modules_to_save=["classifier"] # CRITICAL: We must ensure the new classifier head is actually trained!
     )
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
     # 5. Set up Optimizer 
-    optimizer = AdamW(model.parameters(), lr=5e-5)
+    # LoRA requires a higher learning rate than full fine-tuning (e.g., 2e-4 instead of 5e-5)
+    optimizer = AdamW(model.parameters(), lr=2e-4)
 
     num_epochs = 3
     num_training_steps = num_epochs * (len(train_dataloader) // accelerator.gradient_accumulation_steps)
