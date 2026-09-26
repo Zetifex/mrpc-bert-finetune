@@ -21,7 +21,7 @@ def main():
     # 2. Load Data and Tokenizer
     # Switched to PAWS (Paraphrase Adversaries from Word Scrambling)
     # This dataset specifically fixes the "Lexical Overlap" trap!
-    raw_datasets = load_dataset("paws", "labeled_final")
+    raw_datasets = load_dataset("google-research-datasets/paws", "labeled_final")
     checkpoint = "bert-base-uncased"
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
