@@ -42,7 +42,7 @@ def main():
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
     # Clean up columns for PyTorch
-    tokenized_datasets = tokenized_datasets.remove_columns(["question1", "question2", "id", "qid1", "qid2", "idx"])
+    tokenized_datasets = tokenized_datasets.remove_columns(["question1", "question2", "idx"])
     tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
     tokenized_datasets.set_format("torch")
 
