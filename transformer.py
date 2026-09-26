@@ -24,10 +24,9 @@ def main():
     # QQP is the gold standard for paraphrase detection. It has a great mix of both.
     raw_datasets = load_dataset("nyu-mll/glue", "qqp")
     
-    # QQP is huge (360k+ examples). To keep training fast, we will take a random subset of 20,000 examples.
-    # This is large enough to be robust, but small enough to train quickly!
-    raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select(range(20000))
-    raw_datasets["validation"] = raw_datasets["validation"].shuffle(seed=42).select(range(2000))
+    # QQP is huge (360k+ examples). We will use a larger subset (50,000) for better generalization.
+    raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select(range(50000))
+    raw_datasets["validation"] = raw_datasets["validation"].shuffle(seed=42).select(range(5000))
 
     checkpoint = "bert-base-uncased"
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
@@ -51,7 +50,7 @@ def main():
     train_dataloader = DataLoader(
         tokenized_datasets["train"], 
         shuffle=True, 
-        batch_size=8, # Slightly larger batch size since Accelerate optimizes memory well
+        batch_size=8, 
         collate_fn=data_collator,
         pin_memory=True,          
         num_workers=num_workers   
@@ -64,33 +63,34 @@ def main():
         num_workers=num_workers
     )
 
-    # 4. Initialize model with LoRA (Low-Rank Adaptation)
-    # This is the ultimate trick to stop laptops from overheating. 
-    # Instead of training 110 Million parameters, we freeze the model and only train ~300k parameters!
+    # 4. Initialize model with a much stronger LoRA config
     model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
     
     peft_config = LoraConfig(
         task_type=TaskType.SEQ_CLS, 
         inference_mode=False, 
-        r=8, 
-        lora_alpha=16, 
+        r=32, # Increased rank for higher learning capacity
+        lora_alpha=32, 
         lora_dropout=0.1,
-        target_modules=["query", "value"], # We only fine-tune the attention heads
-        modules_to_save=["classifier"] # CRITICAL: We must ensure the new classifier head is actually trained!
+        target_modules="all-linear", # CRITICAL: Target ALL layers, not just attention, for maximum performance
+        modules_to_save=["classifier"] 
     )
     model = get_peft_model(model, peft_config)
     model.print_trainable_parameters()
 
-    # 5. Set up Optimizer 
-    # LoRA requires a higher learning rate than full fine-tuning (e.g., 2e-4 instead of 5e-5)
+    # 5. Set up Optimizer and Scheduler with Warmup
     optimizer = AdamW(model.parameters(), lr=2e-4)
 
     num_epochs = 3
     num_training_steps = num_epochs * (len(train_dataloader) // accelerator.gradient_accumulation_steps)
+    
+    # Warmup steps prevent the model from destroying its weights in the first few batches
+    num_warmup_steps = int(0.1 * num_training_steps) 
+    
     lr_scheduler = get_scheduler(
         "linear",
         optimizer=optimizer,
-        num_warmup_steps=0,
+        num_warmup_steps=num_warmup_steps,
         num_training_steps=num_training_steps,
     )
 
