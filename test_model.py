@@ -3,7 +3,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import os
 
 def test_model():
-    model_path = "./my_paws_model"
+    model_path = "./my_qqp_model"
     
     if not os.path.exists(model_path):
         print(f"Error: Could not find the model at {model_path}.")

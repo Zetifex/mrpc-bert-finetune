@@ -19,20 +19,29 @@ def main():
     accelerator = Accelerator(gradient_accumulation_steps=4)
 
     # 2. Load Data and Tokenizer
-    # Switched to PAWS (Paraphrase Adversaries from Word Scrambling)
-    # This dataset specifically fixes the "Lexical Overlap" trap!
-    raw_datasets = load_dataset("google-research-datasets/paws", "labeled_final")
+    # PAWS was too specialized. Let's use QQP (Quora Question Pairs)!
+    # QQP is the gold standard for paraphrase detection. It has a great mix of both.
+    raw_datasets = load_dataset("nyu-mll/glue", "qqp")
+    
+    # QQP is huge (360k+ examples). To keep training fast, we will take a random subset of 20,000 examples.
+    # This is large enough to be robust, but small enough to train quickly!
+    raw_datasets["train"] = raw_datasets["train"].shuffle(seed=42).select(range(20000))
+    raw_datasets["validation"] = raw_datasets["validation"].shuffle(seed=42).select(range(2000))
+
     checkpoint = "bert-base-uncased"
     tokenizer = AutoTokenizer.from_pretrained(checkpoint)
 
     def tokenize_function(example):
-        return tokenizer(example["sentence1"], example["sentence2"], truncation=True)
+        return tokenizer(example["question1"], example["question2"], truncation=True)
 
-    tokenized_datasets = raw_datasets.map(tokenize_function, batched=True)
+    # We map the tokenization to the dataset
+    # We ignore errors if a sentence is missing (QQP has a few blank rows)
+    tokenized_datasets = raw_datasets.filter(lambda x: x["question1"] is not None and x["question2"] is not None)
+    tokenized_datasets = tokenized_datasets.map(tokenize_function, batched=True)
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    # PAWS uses 'id' instead of 'idx'
-    tokenized_datasets = tokenized_datasets.remove_columns(["sentence1", "sentence2", "id"])
+    # Clean up columns for PyTorch
+    tokenized_datasets = tokenized_datasets.remove_columns(["question1", "question2", "id", "qid1", "qid2", "idx"])
     tokenized_datasets = tokenized_datasets.rename_column("label", "labels")
     tokenized_datasets.set_format("torch")
 
@@ -118,9 +127,9 @@ def main():
     unwrapped_model = accelerator.unwrap_model(model)
     if accelerator.is_main_process:
         print("Saving the model for testing...")
-        unwrapped_model.save_pretrained("./my_paws_model")
-        tokenizer.save_pretrained("./my_paws_model")
-        print("Model successfully saved to ./my_paws_model!")
+        unwrapped_model.save_pretrained("./my_qqp_model")
+        tokenizer.save_pretrained("./my_qqp_model")
+        print("Model successfully saved to ./my_qqp_model!")
 
 if __name__ == '__main__':
     main()
