@@ -8,7 +8,6 @@ from transformers import (
     AutoModelForSequenceClassification, 
     get_scheduler
 )
-from peft import get_peft_model, LoraConfig, TaskType
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from tqdm.auto import tqdm
@@ -63,23 +62,14 @@ def main():
         num_workers=num_workers
     )
 
-    # 4. Initialize model with a much stronger LoRA config
+    # 4. Initialize base model directly (No LoRA)
+    # We are dropping LoRA because PEFT frequently has bugs saving/loading the classifier head on Sequence Classification tasks.
+    # FP16 mixed_precision (which we keep) will still be enough to keep your laptop cool!
     model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
     
-    peft_config = LoraConfig(
-        task_type=TaskType.SEQ_CLS, 
-        inference_mode=False, 
-        r=32, # Increased rank for higher learning capacity
-        lora_alpha=32, 
-        lora_dropout=0.1,
-        target_modules="all-linear", # CRITICAL: Target ALL layers, not just attention, for maximum performance
-        modules_to_save=["classifier"] 
-    )
-    model = get_peft_model(model, peft_config)
-    model.print_trainable_parameters()
-
     # 5. Set up Optimizer and Scheduler with Warmup
-    optimizer = AdamW(model.parameters(), lr=2e-4)
+    # Reverting to the standard fine-tuning learning rate
+    optimizer = AdamW(model.parameters(), lr=5e-5)
 
     num_epochs = 3
     num_training_steps = num_epochs * (len(train_dataloader) // accelerator.gradient_accumulation_steps)

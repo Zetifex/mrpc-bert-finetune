@@ -1,6 +1,5 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from peft import PeftModel
 import os
 
 def test_model():
@@ -12,12 +11,8 @@ def test_model():
         return
 
     print("Loading the trained model...")
-    checkpoint = "bert-base-uncased"
     tokenizer = AutoTokenizer.from_pretrained(model_path)
-    
-    # With LoRA, we load the base model first, then layer the small trained adapter on top!
-    base_model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
-    model = PeftModel.from_pretrained(base_model, model_path)
+    model = AutoModelForSequenceClassification.from_pretrained(model_path)
     
     print("\n--- Model Loaded Successfully ---")
     print("Type 'quit' to exit.")
