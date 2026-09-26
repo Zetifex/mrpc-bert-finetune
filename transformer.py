@@ -8,6 +8,7 @@ from transformers import (
     AutoModelForSequenceClassification, 
     get_scheduler
 )
+from peft import get_peft_model, LoraConfig, TaskType
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from tqdm.auto import tqdm
@@ -15,8 +16,8 @@ from accelerate import Accelerator
 
 def main():
     # 1. Initialize Accelerator
-    # Accelerate handles mixed precision and gradient accumulation automatically
-    accelerator = Accelerator(gradient_accumulation_steps=4)
+    # Enforcing FP16 mixed precision uses Tensor Cores, which are highly efficient and generate less heat
+    accelerator = Accelerator(gradient_accumulation_steps=4, mixed_precision="fp16")
 
     # 2. Load Data and Tokenizer
     # PAWS was too specialized. Let's use QQP (Quora Question Pairs)!
@@ -63,8 +64,21 @@ def main():
         num_workers=num_workers
     )
 
-    # 4. Initialize model
+    # 4. Initialize model with LoRA (Low-Rank Adaptation)
+    # This is the ultimate trick to stop laptops from overheating. 
+    # Instead of training 110 Million parameters, we freeze the model and only train ~300k parameters!
     model = AutoModelForSequenceClassification.from_pretrained(checkpoint, num_labels=2)
+    
+    peft_config = LoraConfig(
+        task_type=TaskType.SEQ_CLS, 
+        inference_mode=False, 
+        r=8, 
+        lora_alpha=16, 
+        lora_dropout=0.1,
+        target_modules=["query", "value"] # We only fine-tune the attention heads
+    )
+    model = get_peft_model(model, peft_config)
+    model.print_trainable_parameters()
 
     # 5. Set up Optimizer 
     optimizer = AdamW(model.parameters(), lr=5e-5)
