@@ -1,28 +1,46 @@
-# BERT Paraphrase Detector
+# Paraphrase Detection with BERT and QQP
 
-This project fine-tunes a BERT model (`bert-base-uncased`) on the MRPC (Microsoft Research Paraphrase Corpus) dataset from the GLUE benchmark. It is designed to classify whether two sentences are semantically equivalent (paraphrases) or not.
+This repository contains a robust paraphrase detection model fine-tuned on the **Quora Question Pairs (QQP)** dataset using a `bert-base-uncased` transformer. It identifies whether two sentences hold the exact same semantic meaning, regardless of the vocabulary used.
 
-## Features
-- **Efficient Fine-Tuning**: Uses gradient accumulation and mixed-precision training (FP16) to allow training on GPUs with limited VRAM (e.g., 6GB).
-- **Interactive Testing**: Includes a script to interactively test the model with your own sentence pairs.
+## 🚀 The Development Journey
 
-## Files
-- `transformer.py`: The main training script. It loads the MRPC dataset, fine-tunes the BERT model, and saves the trained weights.
-- `test_model.py`: An interactive command-line tool to load the trained model and test it against custom sentences.
+This project evolved significantly during development to overcome common NLP pitfalls and hardware limitations:
 
-## Usage
+### 1. Escaping the "Lexical Overlap Trap" (MRPC -> QQP)
+We originally trained the model on the MRPC dataset. However, MRPC is heavily biased toward word overlap. Our model learned a "lazy" heuristic: *if the words are the same, it must be a paraphrase*. It failed on adversarial sentences like:
+- *"The chef cooked for the guests."* vs *"The guests cooked for the chef."*
 
-1. **Train the Model**:
-   ```bash
-   python transformer.py
-   ```
-   *This will train the model and save it to a local folder named `./my_mrpc_model`.*
+To fix this, we migrated to the **QQP dataset** (using a 50,000 example subset), which contains a massive variety of adversarial examples, tricky reversals, and true paraphrases. 
 
-2. **Test the Model**:
-   ```bash
-   python test_model.py
-   ```
-   *You can type in sentences to see if the model detects them as paraphrases.*
+### 2. Preventing Hardware Overheating (Accelerate & FP16)
+Full fine-tuning of 110-million parameters caused severe laptop overheating. We resolved this by integrating **Hugging Face Accelerate** and enforcing **FP16 Mixed Precision**. 
+* FP16 utilizes Tensor Cores to drastically reduce memory bandwidth and power consumption.
+* *(Note: We temporarily experimented with PEFT/LoRA, but due to known serialization bugs with Sequence Classification heads in the PEFT library, we reverted to full fine-tuning. FP16 alone was enough to keep the hardware cool and fast!)*
 
-## Known Limitations (The Lexical Overlap Trap)
-Because the MRPC dataset is highly biased towards word overlap, the model may mistakenly classify sentences with the same words but different structures (e.g., "The chef cooked for the guests" vs "The guests cooked for the chef") as paraphrases. This is a common phenomenon in NLP!
+## 📂 Files
+- `transformer.py`: The robust training script. It handles FP16 acceleration, dataset downloading, learning rate warmup, and model saving.
+- `test_model.py`: An interactive testing tool to load the model and interrogate it with your own tricky sentences.
+
+## 🧪 Complicated Tests to Try
+Once trained, run `python test_model.py` and try these adversarial tests that break weaker models:
+
+**Test 1: The "Vocabulary Swap" (Should output 🟢 Paraphrase)**
+* Sentence 1: *"What are the most effective methods to shed belly fat quickly?"*
+* Sentence 2: *"How can I rapidly lose weight around my midsection?"*
+* *Why it's hard:* Almost zero word overlap, but identical meaning.
+
+**Test 2: The "Tricky Reversal" (Should output 🔴 DIFFERENT)**
+* Sentence 1: *"How do I start learning Python if I already know Java?"*
+* Sentence 2: *"How do I start learning Java if I already know Python?"*
+* *Why it's hard:* 100% word overlap, but the core intent is completely reversed.
+
+## ⚙️ Usage
+**Train the model (10-15 minutes):**
+```bash
+python transformer.py
+```
+
+**Interact and test:**
+```bash
+python test_model.py
+```
